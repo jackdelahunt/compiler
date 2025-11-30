@@ -1,3 +1,3 @@
 fn FUNC (x y z w) {
-	return 100 + 2;
+	return x + 100 + 2 + z;
 }

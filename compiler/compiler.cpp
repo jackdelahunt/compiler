@@ -555,6 +555,8 @@ string node_to_string(DynamicArray<u8> *bytes, ASTNode *node, i32 indent_level) 
 
 // @ir
 enum InstructionType {
+    IT_StartFunction,
+    IT_EndFunction,
     IT_Push,
     IT_Add,
     IT_Local,
@@ -564,6 +566,7 @@ enum InstructionType {
 struct Instruction {
     InstructionType type;
     i32 value;
+    string string;
 };
 
 struct IR {
@@ -574,10 +577,12 @@ struct IR {
 IR ir_gen(Arena *arena, AST *ast);
 
 void ir_gen_node(IR *ir, ASTNode *node);
+
 void ir_gen_number_literal(IR *ir, ASTNode *node);
 void ir_gen_identifier(IR *ir, ASTNode *node);
 void ir_gen_binary(IR *ir, ASTNode *node);
 
+void ir_gen_function(IR *ir, ASTNode *node);
 void ir_gen_return(IR *ir, ASTNode *node);
 
 i32 ir_get_parameter_index(IR *ir, string name);
@@ -592,9 +597,7 @@ IR ir_gen(Arena *arena, AST *ast) {
         .instructions = dynamic_array_create<Instruction>(arena, 1024),
     };
 
-    for (ASTNode *node : ast->root->function.body) {
-        ir_gen_node(&ir, node);
-    }
+    ir_gen_node(&ir, ast->root);
 
     return ir;
 }
@@ -614,7 +617,7 @@ void ir_gen_node(IR *ir, ASTNode *node) {
             ir_gen_return(ir, node->ret.node);
         } break;
         case NT_Function:
-            Unreachable("ir_gen_node does not support function nodes");
+            ir_gen_function(ir, node);
             break;
         default:
             Unreachable("unsupported expression type in ir_gen_node");
@@ -650,6 +653,16 @@ void ir_gen_binary(IR *ir, ASTNode *node) {
         default:
             Unreachable("unsupported binary operator in ir_gen_binary");
     }
+}
+
+void ir_gen_function(IR *ir, ASTNode *node) {
+    append(&ir->instructions, {.type = IT_StartFunction, .string = node->function.name.source});
+
+    for (ASTNode *statement : node->function.body) {
+        ir_gen_node(ir, statement);
+    }
+
+    append(&ir->instructions, {.type = IT_EndFunction, .string = node->function.name.source});
 }
 
 void ir_gen_return(IR *ir, ASTNode *node) {
@@ -690,6 +703,12 @@ string ir_to_string(Arena *arena, IR *ir) {
             case IT_Return: {
                 fmt(&bytes, "Return\n");
             } break;
+            case IT_StartFunction: {
+                fmt(&bytes, "StartFunction '{}'\n", instruction.string);
+            } break;
+            case IT_EndFunction: {
+                fmt(&bytes, "EndFunction '{}'\n", instruction.string);
+            } break;
             default:
                 Unreachable("unsupported instruction type in instruction_to_string");
         }
@@ -706,8 +725,7 @@ string asmgen(Arena *arena, IR *ir) {
 
     slice<Instruction> instructions = to_slice(&ir->instructions);
 
-    fmt(&bytes, ".code\n\n");
-    fmt(&bytes, "FUNC proc\n");
+    fmt(&bytes, ".code\n");
 
     for (i32 i = 0; i < instructions.len; i++) {
         Instruction instruction = instructions[i];
@@ -737,14 +755,22 @@ string asmgen(Arena *arena, IR *ir) {
             } break;
             case IT_Return: {
                 fmt(&bytes, "pop rax\n");
+                fmt(&bytes, "pop rbp\n");
                 fmt(&bytes, "ret\n");
+            } break;
+            case IT_StartFunction: {
+                fmt(&bytes, "{} proc\n", instruction.string);
+                fmt(&bytes, "push rbp\n");
+                fmt(&bytes, "mov rbp, rsp\n");
+            } break;
+            case IT_EndFunction: {
+                fmt(&bytes, "{} endp\n", instruction.string);
             } break;
             default:
                 Unreachable("unsupported instruction type in asmgen");
         }
     }
 
-    fmt(&bytes, "FUNC endp\n\n");
     fmt(&bytes, "end\n");
 
     return to_slice(&bytes);
