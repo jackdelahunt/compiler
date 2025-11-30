@@ -216,6 +216,7 @@ template <typename T>   slice<u8> slice_to_bytes(slice<T> slice);
 template <typename T>   slice<T> slice_from_bytes(slice<u8> slice);
 template <typename T>   T *bytes_to_ptr(slice<u8> slice);
 template <typename T>   slice<u8> bytes_from_ptr(T *ptr);
+template <typename T>   slice<T> slice_clone(Arena *arena, slice<T> src);
 template <typename T>   void slice_copy(slice<T> dst, slice<T> src);
 template <typename T>   void slice_copy_raw_ptr(slice<T> slice, void *ptr);
 template <typename T>   bool slice_memcmp(slice<T> a, slice<T> b);
@@ -252,6 +253,7 @@ template <typename T>   void dynamic_array_maybe_grow(DynamicArray<T> *array, i6
 template <typename T>   void append(DynamicArray<T> *array, T value); 
 template <typename T>   void append_many(DynamicArray<T> *array, slice<T> values); 
 template <typename T>   slice<T> push_many(DynamicArray<T> *array, i64 count);
+template <typename T>   void reset(DynamicArray<T> *array);
 template <typename T>   slice<T> to_slice(DynamicArray<T> *array); 
 
 // @timer
@@ -422,6 +424,13 @@ T *bytes_to_ptr(slice<u8> slice) {
 template <typename T>
 slice<u8> bytes_from_ptr(T *ptr) {
     return slice_create((u8 *) ptr, sizeof(T));
+}
+
+template <typename T>   
+slice<T> slice_clone(Arena *arena, slice<T> src) {
+    slice<T> dst = arena_alloc_many<T>(arena, src.len);
+    slice_copy(dst, src);
+    return dst;
 }
 
 template <typename T>
@@ -723,6 +732,11 @@ slice<T> push_many(DynamicArray<T> *array, i64 count) {
     array->len += count;
 
     return s;
+}
+
+template <typename T>
+void reset(DynamicArray<T> *array) {
+    array->len = 0;
 }
 
 template <typename T>

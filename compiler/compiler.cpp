@@ -270,7 +270,13 @@ struct BinaryASTNode {
 struct FunctionASTNode {
     Token name;
     array<Token, 4> parameters;
+    slice<string> locals;
     slice<ASTNode *> body;
+};
+
+struct LetASTNode {
+    Token name;
+    ASTNode * expression;
 };
 
 struct ReturnASTNode {
@@ -285,6 +291,7 @@ enum ASTNodeType {
 
     // statements
     NT_Function,
+    NT_Let,
     NT_Return,
 };
 
@@ -299,6 +306,7 @@ struct ASTNode {
 
         // statements
         FunctionASTNode function;
+        LetASTNode let;
         ReturnASTNode ret;
     };
 };
@@ -312,12 +320,14 @@ struct Parser {
 
     i64 position;
     slice<Token> tokens;
+    DynamicArray<string> locals;
 };
 
 AST parse(Arena *arena, slice<Token> tokens);
 
 ASTNode *parse_node(Parser *parser);
 ASTNode *parse_function(Parser *parser);
+ASTNode *parse_let(Parser *parser);
 ASTNode *parse_return(Parser *parser);
 
 ASTNode *parse_expression(Parser *parser);
@@ -334,6 +344,7 @@ AST parse(Arena *arena, slice<Token> tokens) {
         .arena = arena,
         .position = 0,
         .tokens = tokens,
+        .locals = dynamic_array_create<string>(arena, 16),
     };
 
     ASTNode *root = parse_node(&parser);
@@ -351,6 +362,10 @@ AST parse(Arena *arena, slice<Token> tokens) {
 ASTNode *parse_node(Parser *parser) {
     if (parser_is_next(parser, TT_Fn)) {
         return parse_function(parser);
+    }
+
+    if (parser_is_next(parser, TT_Let)) {
+        return parse_let(parser);
     }
 
     if (parser_is_next(parser, TT_Return)) {
@@ -402,13 +417,49 @@ ASTNode *parse_function(Parser *parser) {
     Token brace_close = parser_next(parser);
     Assert(brace_close.type == TT_Brace_Close);
 
+    slice<string> locals = {};
+
+    if (parser->locals.len > 0) {
+        // clone to function and reset parser locals 
+        locals = slice_clone(parser->arena, to_slice(&parser->locals));
+        reset(&parser->locals);
+    }
+
     node->type = NT_Function;
     node->function.name = name;
     node->function.parameters[0] = param0;
     node->function.parameters[1] = param1;
     node->function.parameters[2] = param2;
     node->function.parameters[3] = param3;
+    node->function.locals = locals;
     node->function.body = to_slice(&body);
+
+    return node; 
+}
+
+ASTNode *parse_let(Parser *parser) {
+    ASTNode *node = arena_alloc<ASTNode>(parser->arena);
+
+    Token let = parser_next(parser);
+    Assert(let.type == TT_Let);
+
+    Token name = parser_next(parser);
+    Assert(name.type == TT_Identifier);
+
+    Token equals = parser_next(parser);
+    Assert(equals.type == TT_Equals);
+
+    ASTNode *expression = parse_expression(parser);
+    Assert(expression);
+
+    Token semi_colon = parser_next(parser);
+    Assert(semi_colon.type == TT_Semicolon);
+
+    node->type = NT_Let;
+    node->let.name = name;
+    node->let.expression = expression;
+
+    append(&parser->locals, name.source);
 
     return node; 
 }
@@ -536,9 +587,33 @@ string node_to_string(DynamicArray<u8> *bytes, ASTNode *node, i32 indent_level) 
             indent(bytes, indent_level);
             fmt(bytes, "Fn {}:\n", node->function.name.source);
 
+            indent(bytes, indent_level + 1);
+
+            fmt(bytes, "Parameters:");
+            for (i32 i = 0; i < node->function.parameters.size(); i++) {
+                fmt(bytes, " {}", node->function.parameters[i].source);
+            }
+
+            fmt(bytes, "\n");
+
+            indent(bytes, indent_level + 1);
+
+            fmt(bytes, "Locals:");
+            for (i32 i = 0; i < node->function.locals.len; i++) {
+                fmt(bytes, " {}", node->function.locals[i]);
+            }
+
+            fmt(bytes, "\n");
+
             for (ASTNode *statement : node->function.body) {
                 node_to_string(bytes, statement, indent_level + 1);
             }
+        } break;
+        case NT_Let: {
+            indent(bytes, indent_level);
+            fmt(bytes, "Let: {}\n", node->let.name.source);
+
+            node_to_string(bytes, node->let.expression, indent_level + 1);
         } break;
         case NT_Return: {
             indent(bytes, indent_level);

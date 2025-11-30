@@ -1,3 +1,5 @@
 fn FUNC (x y z w) {
+	let hello = 10;
+
 	return x + 100 + 2 + z;
 }
