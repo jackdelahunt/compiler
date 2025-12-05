@@ -12,10 +12,12 @@ enum TokenType {
     TT_Let,
     TT_Return,
     TT_Fn,
+    TT_If,
 
     // singles
     TT_Colon,
     TT_Equals,
+    TT_DoubleEquals,
     TT_Semicolon,
     TT_Plus,
     TT_Minus,
@@ -60,6 +62,16 @@ bool is_keyword(string s, TokenType *type) {
 
     if (slice_memcmp(s, slice<u8>("fn"))) {
         *type = TT_Fn;
+        return true;
+    }
+
+    if (slice_memcmp(s, slice<u8>("if"))) {
+        *type = TT_If;
+        return true;
+    }
+
+    if (slice_memcmp(s, slice<u8>("eql"))) {
+        *type = TT_DoubleEquals;
         return true;
     }
 
@@ -234,8 +246,10 @@ string token_type_to_string(TokenType type) {
         case TT_Let:        return "Let";
         case TT_Return:     return "Return";
         case TT_Fn:         return "Fn";
+        case TT_If:         return "If";
         case TT_Colon:      return "Colon";
         case TT_Equals:     return "Equals";
+        case TT_DoubleEquals:return "DoubleEquals";
         case TT_Semicolon:  return "Semicolon";
         case TT_Plus:       return "Plus";
         case TT_Minus:      return "Minus";
@@ -283,6 +297,11 @@ struct ReturnASTNode {
     ASTNode *node;
 };
 
+struct IfASTNode {
+    ASTNode *condition;
+    slice<ASTNode *> body;
+};
+
 enum ASTNodeType {
     // expressions
     NT_NumberLiteral,
@@ -293,6 +312,7 @@ enum ASTNodeType {
     NT_Function,
     NT_Let,
     NT_Return,
+    NT_If,
 };
 
 struct ASTNode {
@@ -308,6 +328,7 @@ struct ASTNode {
         FunctionASTNode function;
         LetASTNode let;
         ReturnASTNode ret;
+        IfASTNode iff;
     };
 };
 
@@ -329,8 +350,10 @@ ASTNode *parse_node(Parser *parser);
 ASTNode *parse_function(Parser *parser);
 ASTNode *parse_let(Parser *parser);
 ASTNode *parse_return(Parser *parser);
+ASTNode *parse_if(Parser *parser);
 
 ASTNode *parse_expression(Parser *parser);
+ASTNode *parse_binary_2(Parser *parser);
 ASTNode *parse_binary_1(Parser *parser);
 ASTNode *parse_literal(Parser *parser);
 Token parser_next(Parser *parser);
@@ -370,6 +393,10 @@ ASTNode *parse_node(Parser *parser) {
 
     if (parser_is_next(parser, TT_Return)) {
         return parse_return(parser);
+    }
+
+    if (parser_is_next(parser, TT_If)) {
+        return parse_if(parser);
     }
 
     Unreachable("unexpected token in parse_node");
@@ -481,8 +508,57 @@ ASTNode *parse_return(Parser *parser) {
     return return_node;
 }
 
+ASTNode *parse_if(Parser *parser) {
+    ASTNode *node = arena_alloc<ASTNode>(parser->arena);
+    DynamicArray<ASTNode *> body = dynamic_array_create<ASTNode *>(parser->arena, 0);
+
+    Token token = parser_next(parser);
+    Assert(token.type == TT_If);
+
+    ASTNode *condition = parse_expression(parser);
+    Assert(condition);
+
+    Token brace_open = parser_next(parser);
+    Assert(brace_open.type == TT_Brace_Open);
+
+    while (!parser_is_next(parser, TT_Brace_Close)) {
+        ASTNode *body_node = parse_node(parser);
+        Assert(body_node);
+
+        append(&body, body_node);
+    }
+
+    Token brace_close = parser_next(parser);
+    Assert(brace_close.type == TT_Brace_Close);
+
+    node->type = NT_If;
+    node->iff.condition = condition;
+    node->iff.body = to_slice(&body);
+
+    return node;
+}
+
 ASTNode *parse_expression(Parser *parser) {
-    return parse_binary_1(parser);
+    return parse_binary_2(parser);
+}
+
+ASTNode *parse_binary_2(Parser *parser) {
+    ASTNode *expression = parse_binary_1(parser);
+
+    while (parser_is_next(parser, TT_DoubleEquals)) {
+        Token op = parser_next(parser);
+        ASTNode *right = parse_binary_1(parser);
+
+        ASTNode *binary = arena_alloc<ASTNode>(parser->arena);
+        binary->type = NT_Binary;
+        binary->binary.left = expression;
+        binary->binary.op = op;
+        binary->binary.right = right;
+
+        expression = binary;
+    }
+
+    return expression;
 }
 
 ASTNode *parse_binary_1(Parser *parser) {
@@ -621,6 +697,20 @@ string node_to_string(DynamicArray<u8> *bytes, ASTNode *node, i32 indent_level) 
 
             node_to_string(bytes, node->ret.node, indent_level + 1);
         } break;
+        case NT_If: {
+            indent(bytes, indent_level);
+            fmt(bytes, "If:\n");
+
+            indent(bytes, indent_level + 1);
+            fmt(bytes, "Condition:\n");
+            node_to_string(bytes, node->iff.condition, indent_level + 2);
+
+            indent(bytes, indent_level + 1);
+            fmt(bytes, "Body:\n");
+            for (ASTNode *statement : node->iff.body) {
+                node_to_string(bytes, statement, indent_level + 2);
+            }
+        } break;
         default:
             Unreachable("unsupported expression type in ast_to_string");
     }
@@ -636,6 +726,9 @@ enum InstructionType {
     IT_Add,
     IT_Local,
     IT_Return,
+    IT_IfZero,
+    IT_Label,
+    IT_CompareEqual,
 };
 
 struct Instruction {
@@ -659,6 +752,7 @@ void ir_gen_binary(IR *ir, ASTNode *node);
 
 void ir_gen_function(IR *ir, ASTNode *node);
 void ir_gen_return(IR *ir, ASTNode *node);
+void ir_gen_if(IR *ir, ASTNode *node);
 
 i32 ir_get_parameter_index(IR *ir, string name);
 
@@ -679,21 +773,24 @@ IR ir_gen(Arena *arena, AST *ast) {
 
 void ir_gen_node(IR *ir, ASTNode *node) {
     switch (node->type) {
-        case NT_NumberLiteral:
+        case NT_NumberLiteral: {
             ir_gen_number_literal(ir, node);
-            break;
-        case NT_Identifier:
-            ir_gen_identifier(ir, node);
-            break;
-        case NT_Binary:
-            ir_gen_binary(ir, node);
-            break;
-        case NT_Return: {
-            ir_gen_return(ir, node->ret.node);
         } break;
-        case NT_Function:
+        case NT_Identifier: {
+            ir_gen_identifier(ir, node);
+        } break;
+        case NT_Binary: {
+            ir_gen_binary(ir, node);
+        } break;
+        case NT_Function: {
             ir_gen_function(ir, node);
-            break;
+        } break;
+        case NT_Return: {
+            ir_gen_return(ir, node);
+        } break;
+        case NT_If: {
+            ir_gen_if(ir, node);
+        } break;
         default:
             Unreachable("unsupported expression type in ir_gen_node");
     }
@@ -725,6 +822,10 @@ void ir_gen_binary(IR *ir, ASTNode *node) {
             Instruction instruction = {.type = IT_Add};
             append(&ir->instructions, instruction); 
         } break;
+        case TT_DoubleEquals: {
+            Instruction instruction = {.type = IT_CompareEqual};
+            append(&ir->instructions, instruction); 
+        } break;
         default:
             Unreachable("unsupported binary operator in ir_gen_binary");
     }
@@ -741,10 +842,22 @@ void ir_gen_function(IR *ir, ASTNode *node) {
 }
 
 void ir_gen_return(IR *ir, ASTNode *node) {
-    ir_gen_node(ir, node);
+    ir_gen_node(ir, node->ret.node);
 
     Instruction instruction = {.type = IT_Return};
     append(&ir->instructions, instruction);
+}
+
+void ir_gen_if(IR *ir, ASTNode *node) {
+    ir_gen_node(ir, node->iff.condition);
+
+    append(&ir->instructions, Instruction{.type = IT_IfZero, .string = "label_if"});
+    
+    for (auto n : node->iff.body) {
+        ir_gen_node(ir, n);
+    }
+
+    append(&ir->instructions, Instruction{.type = IT_Label, .string = "label_if"});
 }
 
 i32 ir_get_parameter_index(IR *ir, string name) {
@@ -766,6 +879,12 @@ string ir_to_string(Arena *arena, IR *ir) {
         fmt(&bytes, "[{}] ", i);
 
         switch (instruction.type) {
+            case IT_StartFunction: {
+                fmt(&bytes, "StartFunction '{}'\n", instruction.string);
+            } break;
+            case IT_EndFunction: {
+                fmt(&bytes, "EndFunction '{}'\n", instruction.string);
+            } break;
             case IT_Push: {
                 fmt(&bytes, "Push {}\n", instruction.value);
             } break;
@@ -778,14 +897,17 @@ string ir_to_string(Arena *arena, IR *ir) {
             case IT_Return: {
                 fmt(&bytes, "Return\n");
             } break;
-            case IT_StartFunction: {
-                fmt(&bytes, "StartFunction '{}'\n", instruction.string);
+            case IT_IfZero: {
+                fmt(&bytes, "IfZero '{}'\n", instruction.string);
             } break;
-            case IT_EndFunction: {
-                fmt(&bytes, "EndFunction '{}'\n", instruction.string);
+            case IT_Label: {
+                fmt(&bytes, "Label '{}'\n", instruction.string);
+            } break;
+            case IT_CompareEqual: {
+                fmt(&bytes, "CompareEqual\n");
             } break;
             default:
-                Unreachable("unsupported instruction type in instruction_to_string");
+                Unreachable("unsupported instruction type in ir_to_string");
         }
     }
 
@@ -808,38 +930,54 @@ string asmgen(Arena *arena, IR *ir) {
         fmt(&bytes, "\n; [{}]\n", i);
 
         switch (instruction.type) {
-            case IT_Push: {
-                fmt(&bytes, "push {}\n", instruction.value);
-            } break;
-            case IT_Add: {
-                fmt(&bytes, "pop rbx\n");
-                fmt(&bytes, "pop rax\n");
-                fmt(&bytes, "add rax, rbx\n");
-                fmt(&bytes, "push rax\n");
-            } break;
-            case IT_Local: {
-                if (instruction.value == 0) {
-                    fmt(&bytes, "push rcx\n");
-                } else if (instruction.value == 1) {
-                    fmt(&bytes, "push rdx\n");
-                } else if (instruction.value == 2) {
-                    fmt(&bytes, "push r8\n");
-                } else if (instruction.value == 3) {
-                    fmt(&bytes, "push r9\n");
-                }
-            } break;
-            case IT_Return: {
-                fmt(&bytes, "pop rax\n");
-                fmt(&bytes, "pop rbp\n");
-                fmt(&bytes, "ret\n");
-            } break;
             case IT_StartFunction: {
                 fmt(&bytes, "{} proc\n", instruction.string);
-                fmt(&bytes, "push rbp\n");
-                fmt(&bytes, "mov rbp, rsp\n");
+                fmt(&bytes, "    push rbp\n");
+                fmt(&bytes, "    mov rbp, rsp\n");
             } break;
             case IT_EndFunction: {
                 fmt(&bytes, "{} endp\n", instruction.string);
+            } break;
+            case IT_Push: {
+                fmt(&bytes, "    push {}\n", instruction.value);
+            } break;
+            case IT_Add: {
+                fmt(&bytes, "    pop rbx\n");
+                fmt(&bytes, "    pop rax\n");
+                fmt(&bytes, "    add rax, rbx\n");
+                fmt(&bytes, "    push rax\n");
+            } break;
+            case IT_Local: {
+                if (instruction.value == 0) {
+                    fmt(&bytes, "    push rcx\n");
+                } else if (instruction.value == 1) {
+                    fmt(&bytes, "    push rdx\n");
+                } else if (instruction.value == 2) {
+                    fmt(&bytes, "    push r8\n");
+                } else if (instruction.value == 3) {
+                    fmt(&bytes, "    push r9\n");
+                }
+            } break;
+            case IT_Return: {
+                fmt(&bytes, "    pop rax\n");
+                fmt(&bytes, "    pop rbp\n");
+                fmt(&bytes, "    ret\n");
+            } break;
+            case IT_IfZero: {
+                fmt(&bytes, "    pop rbx\n");
+                fmt(&bytes, "    cmp rbx, 0\n");
+                fmt(&bytes, "    je {}\n", instruction.string);
+            } break;
+            case IT_Label: {
+                fmt(&bytes, "{}:\n", instruction.string);
+            } break;
+            case IT_CompareEqual: {
+                fmt(&bytes, "    pop rax\n");
+                fmt(&bytes, "    pop rbx\n");
+                fmt(&bytes, "    cmp rax, rbx\n");
+                fmt(&bytes, "    mov rax, 0\n");
+                fmt(&bytes, "    setz al\n");
+                fmt(&bytes, "    push rax\n");
             } break;
             default:
                 Unreachable("unsupported instruction type in asmgen");

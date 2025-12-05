@@ -1,5 +1,7 @@
 fn FUNC (x y z w) {
-	let hello = 10;
+	if x eql 200 {
+		return 101;	
+	}
 
-	return x + 100 + 2 + z;
+	return 0;
 }

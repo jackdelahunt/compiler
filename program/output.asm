@@ -2,44 +2,47 @@
 
 ; [0]
 FUNC proc
-push rbp
-mov rbp, rsp
+    push rbp
+    mov rbp, rsp
 
 ; [1]
-push rcx
+    push rcx
 
 ; [2]
-push 100
+    push 200
 
 ; [3]
-pop rbx
-pop rax
-add rax, rbx
-push rax
+    pop rax
+    pop rbx
+    cmp rax, rbx
+    mov rax, 0
+    setz al
+    push rax
 
 ; [4]
-push 2
+    pop rbx
+    cmp rbx, 0
+    je label_if
 
 ; [5]
-pop rbx
-pop rax
-add rax, rbx
-push rax
+    push 101
 
 ; [6]
-push r8
+    pop rax
+    pop rbp
+    ret
 
 ; [7]
-pop rbx
-pop rax
-add rax, rbx
-push rax
+label_if:
 
 ; [8]
-pop rax
-pop rbp
-ret
+    push 0
 
 ; [9]
+    pop rax
+    pop rbp
+    ret
+
+; [10]
 FUNC endp
 end
