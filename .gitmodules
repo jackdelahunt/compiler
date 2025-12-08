@@ -1,0 +1,3 @@
+[submodule "compiler/ack"]
+	path = compiler/ack
+	url = https://github.com/jackdelahunt/ack.git
