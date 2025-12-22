@@ -1,3 +1,4 @@
+EXTERN putchar:PROC
 .code
 
 ; [0]
@@ -6,43 +7,22 @@ FUNC proc
     mov rbp, rsp
 
 ; [1]
-    push rcx
+    push 32
 
 ; [2]
-    push 200
+    pop rcx
+    call putchar
+    mov rcx, 10
+    call putchar
 
 ; [3]
-    pop rax
-    pop rbx
-    cmp rax, rbx
-    mov rax, 0
-    setz al
-    push rax
+    push 100
 
 ; [4]
-    pop rbx
-    cmp rbx, 0
-    je label_if
+    pop rax
+    pop rbp
+    ret
 
 ; [5]
-    push 101
-
-; [6]
-    pop rax
-    pop rbp
-    ret
-
-; [7]
-label_if:
-
-; [8]
-    push 0
-
-; [9]
-    pop rax
-    pop rbp
-    ret
-
-; [10]
 FUNC endp
 end

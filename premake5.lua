@@ -2,7 +2,6 @@ workspace "Toolchain"
     configurations { "Debug", "Release", "Profile" }
     location "build"
 
-    -- everything for each project to inherit
     cppdialect "C++20"
     language "C++"
     staticruntime "Off"
@@ -12,18 +11,25 @@ workspace "Toolchain"
     warnings "Off"
     flags { "MultiProcessorCompile" }
 
-    defines { "WINDOWS", "ENABLE_ASSERTS" }
+    defines { "OS_WINDOWS", "COMPILER_MSVC" }
+    -- defines { "OS_LINUX", "COMPILER_GCC" }
+    -- defines { "OS_MACOS", "COMPILER_CLANG" }
 
     filter "configurations:Debug"
-        defines { "DEBUG" }
+        defines { "BUILD_DEBUG", "ENABLE_ASSERTS" }
+        targetdir "build/bin/debug"
         symbols "On"
-
-    filter "configurations:Profile"
-        profile "On"
-        symbols "On"
-        optimize "On"
 
     filter "configurations:Release"
+        defines { "BUILD_RELEASE" }
+        targetdir "build/bin/release"
+        optimize "On"
+
+    filter "configurations:Profile"
+        defines { "BUILD_DEBUG", "BUILD_RELEASE" }
+        targetdir "build/bin/profile"
+        profile "On"
+        symbols "On"
         optimize "On"
 
 project "compiler"
@@ -34,15 +40,6 @@ project "compiler"
         "compiler/compiler.cpp",
     }
 
-    filter "configurations:Debug"
-        targetdir "build/bin/debug"
-
-    filter "configurations:Profile"
-        targetdir "build/bin/profile"
-
-    filter "configurations:Release"
-        targetdir "build/bin/release"
-
 project "program"
     kind "ConsoleApp"
     location "build/%{prj.name}"
@@ -51,12 +48,3 @@ project "program"
         "program/program.c",
         "program/output.asm",
     }
-
-    filter "configurations:Debug"
-        targetdir "build/bin/debug"
-
-    filter "configurations:Profile"
-        targetdir "build/bin/profile"
-
-    filter "configurations:Release"
-        targetdir "build/bin/release"

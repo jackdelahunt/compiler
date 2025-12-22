@@ -1,4 +1,128 @@
+#include <cstdlib>
+#include <cstring>
+#include <windows.h>
+
 #include "ack/ack.cpp"
+
+struct Pool {
+    u64 base;
+
+    u64 data_end;
+    u64 commit_end;
+    u64 reserve_end;
+
+    u64 commit_size;
+    u64 page_size;
+};
+
+u64 align_up(u64 n, u64 alignment) {
+    return (n + alignment - 1) / alignment * alignment;
+}
+
+Pool pool_create(u64 reserve_size, u64 commit_size) {
+    u64 page_size = {};
+
+    { // get page size with win32
+        SYSTEM_INFO info = {};
+        GetSystemInfo(&info);
+        page_size = u64(info.dwPageSize);
+    }
+
+    u64 aligned_commit_size = align_up(commit_size, page_size);
+    u64 aligned_reserve_size = align_up(reserve_size, page_size);
+
+    Pool pool = {};
+    pool.base = (u64) VirtualAlloc(NULL, aligned_reserve_size, MEM_RESERVE, PAGE_READWRITE);
+    pool.data_end = pool.base;
+    pool.commit_end = pool.base;
+    pool.reserve_end = pool.base + aligned_reserve_size;
+    pool.commit_size = aligned_commit_size;
+    pool.page_size = page_size;
+
+    return pool;
+}
+
+void pool_maybe_grow(Pool *pool, u64 alloc_size) {
+    if (pool->data_end + alloc_size < pool->commit_end) {
+        return;
+    }
+
+    u64 new_commit_size_from_base = (pool->commit_end - pool->base) + align_up(alloc_size, pool->commit_size);
+    VirtualAlloc((void *) pool->base, new_commit_size_from_base, MEM_COMMIT, PAGE_READWRITE);
+    pool->commit_end = pool->base + new_commit_size_from_base;
+
+    Assertf(pool->commit_end == align_up(pool->commit_end, pool->page_size), "pool.commit_end should be page aligned");
+}
+
+void *pool_alloc(Pool *pool, u64 alloc_size) {
+    pool_maybe_grow(pool, alloc_size);
+
+    u64 ptr = pool->data_end;
+    pool->data_end += alloc_size;
+
+    return (void *) ptr;
+}
+
+void pool_print_info(Pool *pool) {
+    u64 total_size = pool->reserve_end - pool->base;
+
+    u64 data_size = pool->data_end - pool->base;
+    u64 commit_unused = pool->commit_end - pool->data_end;
+    u64 reserve_unused = pool->reserve_end - pool->commit_end;
+
+    u64 data_size_percent = u64(100.0f * (f32(data_size) / f32(total_size)));
+    u64 commit_unused_percent = u64(100.0f * (f32(commit_unused) / f32(total_size)));
+    u64 reserve_unused_percent = u64(100.0f * (f32(reserve_unused) / f32(total_size)));
+
+    Log("==== Pool Info ====");
+    Logf("Total size:       {} bytes", total_size);
+    Logf("Data size:        {} bytes [{}%]", data_size, data_size_percent);
+    Logf("Commit unused:    {} bytes [{}%]", commit_unused, commit_unused_percent);
+    Logf("Reserve unused:   {} bytes [{}%]", reserve_unused, reserve_unused_percent);
+    Logf("Commit size:      {}", pool->commit_size);
+    Logf("Page size:        {}", pool->page_size);
+    // Logf("Base ptr:         {}", pool->base);
+    // Logf("Data ptr:         {}", pool->data_end);
+    // Logf("Commit ptr:       {}", pool->commit_end);
+    // Logf("Reserve ptr:      {}", pool->reserve_end);
+}
+
+// TODO:
+// - align alloc
+// - nice interface for pool
+// - add Print and Printf macros
+int main() {
+    log_set_options(false, false);
+
+    if (false) {
+        for (u64 i = 0; i < MB(1); i += 5) {
+            Sleep(5);
+            Logf("i={} :: alligned={}", i, align_up(i, 4096));
+        }
+
+        return 0;
+    }
+
+    Pool pool = pool_create(GB(1), KB(64));
+
+    pool_print_info(&pool);
+
+    u64 alloc_size = MB(1);
+
+    while (true) {
+        Sleep(100);
+
+        u8 *x = (u8*) pool_alloc(&pool, alloc_size);
+        memset(x, 123, alloc_size);
+
+        pool_print_info(&pool);
+    }
+
+    return 0;
+}
+
+#if 0
+
 
 #include <cstdio>
 
@@ -13,6 +137,7 @@ enum TokenType {
     TT_Return,
     TT_Fn,
     TT_If,
+    TT_Print,
 
     // singles
     TT_Colon,
@@ -67,6 +192,11 @@ bool is_keyword(string s, TokenType *type) {
 
     if (slice_memcmp(s, slice<u8>("if"))) {
         *type = TT_If;
+        return true;
+    }
+
+    if (slice_memcmp(s, slice<u8>("print"))) {
+        *type = TT_Print;
         return true;
     }
 
@@ -247,6 +377,7 @@ string token_type_to_string(TokenType type) {
         case TT_Return:     return "Return";
         case TT_Fn:         return "Fn";
         case TT_If:         return "If";
+        case TT_Print:      return "Print";
         case TT_Colon:      return "Colon";
         case TT_Equals:     return "Equals";
         case TT_DoubleEquals:return "DoubleEquals";
@@ -302,6 +433,10 @@ struct IfASTNode {
     slice<ASTNode *> body;
 };
 
+struct PrintASTNode {
+    ASTNode *node;
+};
+
 enum ASTNodeType {
     // expressions
     NT_NumberLiteral,
@@ -313,6 +448,7 @@ enum ASTNodeType {
     NT_Let,
     NT_Return,
     NT_If,
+    NT_Print,
 };
 
 struct ASTNode {
@@ -329,6 +465,7 @@ struct ASTNode {
         LetASTNode let;
         ReturnASTNode ret;
         IfASTNode iff;
+        PrintASTNode print;
     };
 };
 
@@ -351,6 +488,7 @@ ASTNode *parse_function(Parser *parser);
 ASTNode *parse_let(Parser *parser);
 ASTNode *parse_return(Parser *parser);
 ASTNode *parse_if(Parser *parser);
+ASTNode *parse_print(Parser *parser);
 
 ASTNode *parse_expression(Parser *parser);
 ASTNode *parse_binary_2(Parser *parser);
@@ -397,6 +535,10 @@ ASTNode *parse_node(Parser *parser) {
 
     if (parser_is_next(parser, TT_If)) {
         return parse_if(parser);
+    }
+
+    if (parser_is_next(parser, TT_Print)) {
+        return parse_print(parser);
     }
 
     Unreachable("unexpected token in parse_node");
@@ -534,6 +676,23 @@ ASTNode *parse_if(Parser *parser) {
     node->type = NT_If;
     node->iff.condition = condition;
     node->iff.body = to_slice(&body);
+
+    return node;
+}
+
+ASTNode *parse_print(Parser *parser) {
+    Token token = parser_next(parser);
+    Assert(token.type == TT_Print);
+
+    ASTNode *expression = parse_expression(parser);
+    Assert(expression);
+
+    ASTNode *node = arena_alloc<ASTNode>(parser->arena);
+    node->type = NT_Print;
+    node->print.node = expression;
+
+    Token semi_colon = parser_next(parser);
+    Assert(semi_colon.type == TT_Semicolon);
 
     return node;
 }
@@ -711,6 +870,12 @@ string node_to_string(DynamicArray<u8> *bytes, ASTNode *node, i32 indent_level) 
                 node_to_string(bytes, statement, indent_level + 2);
             }
         } break;
+        case NT_Print: {
+            indent(bytes, indent_level);
+            fmt(bytes, "Print:\n");
+
+            node_to_string(bytes, node->print.node, indent_level + 1);
+        } break;
         default:
             Unreachable("unsupported expression type in ast_to_string");
     }
@@ -729,6 +894,7 @@ enum InstructionType {
     IT_IfZero,
     IT_Label,
     IT_CompareEqual,
+    IT_Print,
 };
 
 struct Instruction {
@@ -753,6 +919,7 @@ void ir_gen_binary(IR *ir, ASTNode *node);
 void ir_gen_function(IR *ir, ASTNode *node);
 void ir_gen_return(IR *ir, ASTNode *node);
 void ir_gen_if(IR *ir, ASTNode *node);
+void ir_gen_print(IR *ir, ASTNode *node);
 
 i32 ir_get_parameter_index(IR *ir, string name);
 
@@ -790,6 +957,9 @@ void ir_gen_node(IR *ir, ASTNode *node) {
         } break;
         case NT_If: {
             ir_gen_if(ir, node);
+        } break;
+        case NT_Print: {
+            ir_gen_print(ir, node);
         } break;
         default:
             Unreachable("unsupported expression type in ir_gen_node");
@@ -860,6 +1030,12 @@ void ir_gen_if(IR *ir, ASTNode *node) {
     append(&ir->instructions, Instruction{.type = IT_Label, .string = "label_if"});
 }
 
+void ir_gen_print(IR *ir, ASTNode *node) {
+    ir_gen_node(ir, node->print.node);
+
+    append(&ir->instructions, Instruction{.type = IT_Print});
+}
+
 i32 ir_get_parameter_index(IR *ir, string name) {
     for (i32 i = 0; i < ir->parameters.size(); i++) {
         if (slice_memcmp(ir->parameters[i].source, name)) {
@@ -906,6 +1082,9 @@ string ir_to_string(Arena *arena, IR *ir) {
             case IT_CompareEqual: {
                 fmt(&bytes, "CompareEqual\n");
             } break;
+            case IT_Print: {
+                fmt(&bytes, "Print\n");
+            } break;
             default:
                 Unreachable("unsupported instruction type in ir_to_string");
         }
@@ -922,6 +1101,7 @@ string asmgen(Arena *arena, IR *ir) {
 
     slice<Instruction> instructions = to_slice(&ir->instructions);
 
+    fmt(&bytes, "EXTERN putchar:PROC\n");
     fmt(&bytes, ".code\n");
 
     for (i32 i = 0; i < instructions.len; i++) {
@@ -978,6 +1158,12 @@ string asmgen(Arena *arena, IR *ir) {
                 fmt(&bytes, "    mov rax, 0\n");
                 fmt(&bytes, "    setz al\n");
                 fmt(&bytes, "    push rax\n");
+            } break;
+            case IT_Print: {
+                fmt(&bytes, "    pop rcx\n");
+                fmt(&bytes, "    call putchar\n");
+                fmt(&bytes, "    mov rcx, 10\n");
+                fmt(&bytes, "    call putchar\n");
             } break;
             default:
                 Unreachable("unsupported instruction type in asmgen");
@@ -1059,6 +1245,7 @@ i32 main() {
         return 1;
     }
 }
+#endif
 
 
 

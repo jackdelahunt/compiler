@@ -1,7 +1,4 @@
 fn FUNC (x y z w) {
-	if x eql 200 {
-		return 101;	
-	}
-
-	return 0;
+	print 32;
+	return 100;
 }
